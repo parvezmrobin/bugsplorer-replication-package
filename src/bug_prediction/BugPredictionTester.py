@@ -57,6 +57,18 @@ class BugPredictionTester(ModelLoader):
             true_prob, labels, loss = self._predict_from_file_classifier(
                 self.test_dataloader,
             )
+            np.savez(
+                self.args.output_path,
+                true_prob=true_prob,
+                labels=labels,
+            )
+            test_score = Scorer.compute_score(
+                Score.get_scores_names(),
+                labels,
+                true_prob,
+                loss=loss,
+            )
+            self.info(f"Test: {test_score}")
         elif self.args.encoder_type == "line":
             self.info("Regular Evaluation:")
             test_score = self.evaluate(
@@ -65,26 +77,11 @@ class BugPredictionTester(ModelLoader):
                 output_file=f"{self.args.output_path}-regular",
             )
             self.info(f"Test: {test_score}")
-            self.info("Conservative Evaluation:")
-            true_prob, labels, loss = self._predict_from_line_classifier(
-                self.test_dataloader,
-            )
         else:
             raise ValueError(f"Unknown encoder type: {self.args.encoder_type}")
 
         Path(self.args.output_path).parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            self.args.output_path,
-            true_prob=true_prob,
-            labels=labels,
-        )
-        test_score = Scorer.compute_score(
-            Score.get_scores_names(),
-            labels,
-            true_prob,
-            loss=loss,
-        )
-        self.info(f"Test: {test_score}")
+
         end_time = time.perf_counter()
         elapsed_seconds = end_time - start_time
 

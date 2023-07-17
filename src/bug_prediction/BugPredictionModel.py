@@ -38,7 +38,7 @@ class BugPredictionModel(nn.Module):
         model_class = model_class_of[model_type]
         print(f"{model_class=}")
 
-        if is_checkpoint or not pretrained_model_name:
+        if is_checkpoint:
             self.token_encoder = model_class.line_encoder(config=config)
         else:
             self.token_encoder = model_class.line_encoder.from_pretrained(

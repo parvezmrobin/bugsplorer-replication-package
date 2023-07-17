@@ -51,7 +51,7 @@ class ModelLoader(AbstractBaseLogger):
         )
         for i, batch in enumerate(eval_progress):
             # the third element is the actual number of lines in the file
-            inputs, labels, _ = batch
+            inputs, labels, *_ = batch
 
             with torch.no_grad():
                 loss, logit = self.model(

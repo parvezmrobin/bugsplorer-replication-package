@@ -24,7 +24,7 @@ class BugPredictionArgs(Tap):
     seed: int = 4
     config_name: str = None
     model_type: str
-    model_name: str = None
+    model_name: str
     encoder_type: str
     tokenizer_name: str
     # covers 90% of the lines in defectors, 99% in linedp
@@ -34,7 +34,7 @@ class BugPredictionArgs(Tap):
     class_weight: int = None
     dataset_path: str = "dataset/python/data/bug_prediction_splits"
     cache_dir: str
-    checkpoint_dir: str
+    checkpoint_dir: str = None
     output_path: Optional[str] = None
     batch_size: int = 16
     start_epoch: int = 0

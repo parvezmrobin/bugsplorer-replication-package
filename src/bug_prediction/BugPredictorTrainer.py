@@ -43,6 +43,8 @@ class BugPredictorTrainer(ModelLoader):
 
     def __init__(self):
         args = BugPredictionArgs().parse_args()
+        assert args.checkpoint_dir is not None
+        assert args.model_type in model_class_of
         super().__init__(self.get_log_file_name(), args)
         self.num_data_loader_worker = min(
             4,

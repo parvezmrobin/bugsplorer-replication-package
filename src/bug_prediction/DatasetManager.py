@@ -232,8 +232,6 @@ class DatasetManager:
                 mask.append(True)
             except (UnicodeError, AttributeError, ValueError):
                 mask.append(False)
-        actual_file_lengths = [len(lines) for lines in file_content]
-        actual_lengths_tensor = torch.tensor(actual_file_lengths, dtype=torch.int32)
 
         tokenization_progress = tqdm(
             [
@@ -243,7 +241,12 @@ class DatasetManager:
             desc=f"Tokenizing {split_name}",
             smoothing=0.001,
         )
-        file_tensors = tuple(map(_tokenize_lines, tokenization_progress))
+        file_tensors = tuple(
+            file_chunk
+            # _tokenize_lines returns a list of tensors for each file
+            for file_chunks in map(_tokenize_lines, tokenization_progress)
+            for file_chunk in file_chunks
+        )
         source_tensor = torch.stack(file_tensors)
         self.info(f"Tokenization complete: {len(dataframe)=}, {source_tensor.shape=}")
         assert source_tensor.shape[1:] == (
@@ -258,26 +261,36 @@ class DatasetManager:
                 set(lines.tolist())
                 for lines in dataframe["lines"].iloc[mask]
             ]
-            buggy_line_matrix = [
-                [i in buggy_lines for i in range(1, self.max_file_len + 1)]
-                for buggy_lines in buggy_lines_of_file
-            ]
+            buggy_line_matrix = []
+            for i, buggy_lines in enumerate(buggy_lines_of_file):
+                file_len = len(file_content[i])
+                for start in range(1, file_len + 1, self.max_file_len - 64):
+                    if start > 1 and start + 64 > file_len:
+                        # all lines of this chunk are already in the previous chunk
+                        continue
+                    buggy_line_matrix.append(
+                        [
+                            i in buggy_lines
+                            for i in range(start, start + self.max_file_len)
+                        ]
+                    )
+
             target_tensor = torch.tensor(buggy_line_matrix)
-            assert target_tensor.shape == (
-                len(file_content),
-                self.max_file_len,
-            ), target_tensor.shape
-            tensor_dataset = TensorDataset(
-                source_tensor, target_tensor, actual_lengths_tensor
-            )
-        else:
+
+            assert target_tensor.shape[1:] == (self.max_file_len,), target_tensor.shape
+            assert (
+                source_tensor.shape[0] == target_tensor.shape[0]
+            ), f"{source_tensor.shape=} {target_tensor.shape=}"
+
+            tensor_dataset = TensorDataset(source_tensor, target_tensor)
+        elif self.target == "file":
             # use only the lines for which we could decode the file content
             is_buggy_file = dataframe["lines"].iloc[mask].str.len() > 0
             target_tensor = torch.tensor(is_buggy_file.to_list())
             assert target_tensor.shape == (len(file_content),), target_tensor.shape
-            tensor_dataset = TensorDataset(
-                source_tensor, target_tensor, actual_lengths_tensor
-            )
+            tensor_dataset = TensorDataset(source_tensor, target_tensor)
+        else:
+            raise ValueError(f"Unknown target {self.target}")
 
         fixed_len_file_content = self._truncate_or_pad(file_content)
         return tensor_dataset, fixed_len_file_content, file_info
@@ -319,11 +332,15 @@ class DatasetManager:
             desc=f"Tokenizing {split_name}",
             smoothing=0.001,
         )
-        file_tensors = tuple(map(_tokenize_lines, tokenization_progress))
+        file_tensors = tuple(
+            file_chunk
+            # _tokenize_lines returns a list of tensors for each file
+            for file_chunks in map(_tokenize_lines, tokenization_progress)
+            for file_chunk in file_chunks
+        )
         source_tensor = torch.stack(file_tensors)
         self.info(f"Tokenization complete: {source_tensor.shape=}")
-        assert source_tensor.shape == (
-            len(dataframe),
+        assert source_tensor.shape[1:] == (
             self.max_file_len,
             self.max_line_len,
         )
@@ -334,40 +351,48 @@ class DatasetManager:
             .apply(lambda grp: grp.to_list())
             .to_list()
         )
-        actual_file_lengths = []
-        for buggy_lines in buggy_lines_of_file:
-            actual_file_lengths.append(len(buggy_lines))
-
-        actual_file_lengths = [
-            min(actual_file_length, 32000) for actual_file_length in actual_file_lengths
-        ]
-        actual_lengths_tensor = torch.tensor(actual_file_lengths, dtype=torch.int32)
 
         if self.target == "line":
             buggy_line_matrix = []
             for buggy_lines in buggy_lines_of_file:
                 padding_len = self.max_file_len - len(buggy_lines)
                 if padding_len < 0:
-                    buggy_line_matrix.append(buggy_lines[: self.max_file_len])
+                    # split the buggy lines into chunks of size max_file_len
+                    # with a stride of 64
+                    new_buggy_lines = []
+                    for start in range(0, len(buggy_lines), self.max_file_len - 64):
+                        new_buggy_lines.append(
+                            buggy_lines[start : start + self.max_file_len]
+                        )
+
+                    if len(new_buggy_lines) > 1 and len(new_buggy_lines[-1]) <= 64:
+                        new_buggy_lines.pop()
+                    if len(new_buggy_lines[-1]) < self.max_file_len:
+                        padding = [False] * (
+                            self.max_file_len - len(new_buggy_lines[-1])
+                        )
+                        new_buggy_lines[-1].extend(padding)
+                    buggy_line_matrix.extend(new_buggy_lines)
+
                 else:
                     padding = [False] * padding_len
                     buggy_line_matrix.append([*buggy_lines, *padding])
 
             target_tensor = torch.tensor(buggy_line_matrix)
-            assert target_tensor.shape == (
-                len(dataframe),
-                self.max_file_len,
-            ), target_tensor.shape
-            tensor_dataset = TensorDataset(
-                source_tensor, target_tensor, actual_lengths_tensor
-            )
-        else:
+
+            assert target_tensor.shape[1:] == (self.max_file_len,), target_tensor.shape
+            assert (
+                source_tensor.shape[0] == target_tensor.shape[0]
+            ), f"{source_tensor.shape=} {target_tensor.shape=}"
+
+            tensor_dataset = TensorDataset(source_tensor, target_tensor)
+        elif self.target == "file":
             is_buggy_file = dataframe["line-label"].apply(lambda grp: grp.any())
             target_tensor = torch.tensor(is_buggy_file.to_list())
             assert target_tensor.shape == (len(dataframe),), target_tensor.shape
-            tensor_dataset = TensorDataset(
-                source_tensor, target_tensor, actual_lengths_tensor
-            )
+            tensor_dataset = TensorDataset(source_tensor, target_tensor)
+        else:
+            raise ValueError(f"Unknown target: {self.target}")
 
         fixed_len_file_content = self._truncate_or_pad(file_content)
         return tensor_dataset, fixed_len_file_content, file_info
@@ -375,6 +400,8 @@ class DatasetManager:
     def _truncate_or_pad(self, file_content):
         """
         Truncates or pads the file content to the maximum file length.
+        In current revision, _truncate_or_pad is not coherent with the
+        shape of the tensor dataset.
         """
         return [
             tuple(lines[: self.max_file_len])
@@ -384,7 +411,7 @@ class DatasetManager:
         ]
 
 
-def _tokenize_lines(args):
+def _tokenize_lines(args) -> list[torch.Tensor]:
     lines, tokenizer, max_line_len, max_file_len = args
     line_token_ids = tokenizer(
         lines,
@@ -393,10 +420,28 @@ def _tokenize_lines(args):
         truncation=True,
         return_tensors="pt",
     )["input_ids"]
-    num_extra_lines = max_file_len - len(lines)
-    if num_extra_lines < 0:
-        return line_token_ids[:max_file_len, :]
-    line_padding = torch.tensor([[tokenizer.pad_token_id]]).repeat(
-        num_extra_lines, max_line_len
-    )
-    return torch.cat([line_token_ids, line_padding], dim=0)
+    # split line_token_ids into max_file_len chunks with 64 tokens overlap.
+    # this is to avoid truncating lines in the middle of a function call.
+    split_line_token_ids = []
+    for i in range(0, len(line_token_ids), max_file_len - 64):
+        split_line_token_ids.append(line_token_ids[i : i + max_file_len])
+    if len(split_line_token_ids) > 1 and len(split_line_token_ids[-1]) <= 64:
+        # if the last chunk is less than 64 tokens, remove the last chunk
+        # since it is already included in the previous chunk
+        split_line_token_ids.pop()
+
+    # pad the last chunk with pad_token_id
+    if len(split_line_token_ids[-1]) < max_file_len:
+        num_padded_lines = max_file_len - len(split_line_token_ids[-1])
+        line_padding = torch.tensor([[tokenizer.pad_token_id]]).repeat(
+            num_padded_lines, max_line_len
+        )
+        split_line_token_ids[-1] = torch.cat(
+            [
+                split_line_token_ids[-1],
+                line_padding,
+            ],
+            dim=0,
+        )
+
+    return split_line_token_ids
